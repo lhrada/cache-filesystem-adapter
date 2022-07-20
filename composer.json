@@ -1,6 +1,6 @@
 {
-    "name": "cache/filesystem-adapter",
-    "description": "A PSR-6 cache implementation using filesystem. This implementation supports tags",
+    "name": "swayok/cache-filesystem-adapter",
+    "description": "A PSR-6 cache implementation using filesystem. This implementation supports tags. Fork of cache/filesystem-adapter.",
     "license": "MIT",
     "type": "library",
     "keywords": [
