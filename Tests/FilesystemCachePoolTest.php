@@ -67,4 +67,30 @@ class FilesystemCachePoolTest extends TestCase
 
         $this->getFilesystem()->delete('cache/corrupt');
     }
+
+    public function testCorruptedTagListDoesNotCrashOnExpiredItemCleanup()
+    {
+        $pool = $this->createCachePool();
+
+        $item = $pool->getItem('expired_with_tag');
+        $item->set('data');
+        $item->expiresAt(new \DateTime('now'));
+        $item->setTags(['broken_tag']);
+        $pool->save($item);
+
+        sleep(1);
+
+        $tagKeyMethod = new \ReflectionMethod($pool, 'getTagKey');
+        $tagKeyMethod->setAccessible(true);
+        $tagKey = $tagKeyMethod->invoke($pool, 'broken_tag');
+
+        $this->getFilesystem()->write('cache/' . $tagKey, 'broken data');
+
+        $expiredItem = $pool->getItem('expired_with_tag');
+        $this->assertFalse($expiredItem->isHit());
+        $this->assertFalse($this->getFilesystem()->has('cache/expired_with_tag'));
+
+        $recoveredTagList = @unserialize($this->getFilesystem()->read('cache/' . $tagKey));
+        $this->assertIsArray($recoveredTagList);
+    }
 }

@@ -68,17 +68,17 @@ class FilesystemCachePool extends AbstractCachePool
 
         try {
             $data = @unserialize($this->filesystem->read($file));
-            if ($data === false) {
+            if (!is_array($data) || !array_key_exists(0, $data) || !array_key_exists(1, $data) || !array_key_exists(2, $data)) {
                 return $empty;
             }
         } catch (FilesystemException $e) {
             return $empty;
         }
 
-        // Determine expirationTimestamp from data, remove items if expired
+        // Determine expirationTimestamp from data, remove items if expired.
         $expirationTimestamp = $data[2] ?: null;
         if ($expirationTimestamp !== null && time() > $expirationTimestamp) {
-            foreach ($data[1] as $tag) {
+            foreach ((array) $data[1] as $tag) {
                 $this->removeListItem($this->getTagKey($tag), $key);
             }
             $this->forceClear($key);
@@ -86,7 +86,7 @@ class FilesystemCachePool extends AbstractCachePool
             return $empty;
         }
 
-        return [true, $data[0], $data[1], $expirationTimestamp];
+        return [true, $data[0], (array) $data[1], $expirationTimestamp];
     }
 
     /**
@@ -157,9 +157,16 @@ class FilesystemCachePool extends AbstractCachePool
         $file = $this->getFilePath($name);
         if (!$this->filesystem->has($file)) {
             $this->filesystem->write($file, serialize([]));
+            return [];
         }
 
-        return unserialize($this->filesystem->read($file));
+        $list = @unserialize($this->filesystem->read($file));
+        if (!is_array($list)) {
+            $this->filesystem->write($file, serialize([]));
+            return [];
+        }
+
+        return $list;
     }
 
     /**
@@ -203,7 +210,7 @@ class FilesystemCachePool extends AbstractCachePool
         }
 
         try {
-            $this->filesystem->write($this->getFilePath($name), serialize($list));
+            $this->filesystem->write($this->getFilePath($name), serialize(array_values($list)));
             return true;
         } catch (FilesystemException $e) {
             return false;
