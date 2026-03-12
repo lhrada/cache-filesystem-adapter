@@ -230,7 +230,10 @@ class FilesystemCachePool extends AbstractCachePool
             // Fallback: no lock, best-effort write (degraded path)
             try {
                 $list = $this->getList($name);
-                $this->filesystem->write($this->getFilePath($name), serialize($transform($list)));
+                $targetPath = $this->getFilePath($name);
+                $tmpPath = $targetPath . '.tmp.' . uniqid('', true);
+                $this->filesystem->write($tmpPath, serialize($transform($list)));
+                $this->filesystem->move($tmpPath, $targetPath);
 
                 return true;
             } catch (FilesystemException $e) {
@@ -240,14 +243,26 @@ class FilesystemCachePool extends AbstractCachePool
 
         flock($lockHandle, LOCK_EX);
 
+        $tmpPath = null;
         try {
             // Re-read AFTER acquiring the lock to capture any concurrent writes
             $current = $this->getList($name);
             $updated = $transform($current);
-            $this->filesystem->write($this->getFilePath($name), serialize(array_values($updated)));
+            $targetPath = $this->getFilePath($name);
+            $tmpPath = $targetPath . '.tmp.' . uniqid('', true);
+            $this->filesystem->write($tmpPath, serialize(array_values($updated)));
+            $this->filesystem->move($tmpPath, $targetPath);
 
             return true;
         } catch (FilesystemException $e) {
+            if ($tmpPath !== null) {
+                try {
+                    $this->filesystem->delete($tmpPath);
+                } catch (FilesystemException) {
+                    // best-effort cleanup
+                }
+            }
+
             return false;
         } finally {
             flock($lockHandle, LOCK_UN);
