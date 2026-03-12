@@ -187,21 +187,13 @@ class FilesystemCachePool extends AbstractCachePool
      */
     protected function appendListItem($name, $key): bool
     {
-        $list = $this->getList($name);
-        if (in_array($key, $list, true)) {
-            return true;
-        }
-
-        return $this->withListLock(
-            (string) $name,
-            static function (array $currentList) use ($key): array {
-                if (!in_array($key, $currentList, true)) {
-                    $currentList[] = $key;
-                }
-
-                return $currentList;
+        return $this->withListLock($name, function (array $list) use ($key): array {
+            if (!in_array($key, $list, true)) {
+                $list[] = $key;
             }
-        );
+
+            return $list;
+        });
     }
 
     /**
@@ -210,69 +202,56 @@ class FilesystemCachePool extends AbstractCachePool
      */
     protected function removeListItem($name, $key): bool
     {
-        $list = $this->getList($name);
-        $filteredList = array_values(array_filter($list, fn($item) => $item !== $key));
-        if ($filteredList === $list) {
-            return true;
-        }
-
-        return $this->withListLock(
-            (string) $name,
-            static fn(array $currentList): array => array_values(array_filter($currentList, fn($item) => $item !== $key))
-        );
+        return $this->withListLock($name, function (array $list) use ($key): array {
+            return array_values(array_filter($list, fn ($item): bool => $item !== $key));
+        });
     }
 
-    private function withListLock(string $name, callable $listTransformer): bool
+    /**
+     * Read-lock-modify-write pattern for tag-list files.
+     * Uses flock() on a temp-dir lock file to serialize concurrent access.
+     * After acquiring the lock the list is re-read so any concurrent write
+     * that happened between our original read and the lock acquisition is merged.
+     *
+     * @param string   $name      List name (tag key)
+     * @param callable $transform (array $currentList): array  — pure mutation callback
+     *
+     * @throws \League\Flysystem\FilesystemException
+     */
+    private function withListLock(string $name, callable $transform): bool
     {
-        $lockFile = sys_get_temp_dir().'/cache_pool_'.md5($this->folder.'/'.$name).'.lock';
-        $lockHandle = @fopen($lockFile, 'c');
+        $lockPath = sys_get_temp_dir()
+            . DIRECTORY_SEPARATOR
+            . 'cache_pool_' . md5($this->folder . '/' . $name) . '.lock';
+
+        $lockHandle = @fopen($lockPath, 'c');
 
         if ($lockHandle === false) {
-            return $this->applyListTransform($name, $listTransformer);
+            // Fallback: no lock, best-effort write (degraded path)
+            try {
+                $list = $this->getList($name);
+                $this->filesystem->write($this->getFilePath($name), serialize($transform($list)));
+
+                return true;
+            } catch (FilesystemException $e) {
+                return false;
+            }
         }
 
-        if (!flock($lockHandle, LOCK_EX)) {
-            fclose($lockHandle);
-
-            return $this->applyListTransform($name, $listTransformer);
-        }
+        flock($lockHandle, LOCK_EX);
 
         try {
-            return $this->applyListTransform($name, $listTransformer);
-        } finally {
-            flock($lockHandle, LOCK_UN);
-            fclose($lockHandle);
-        }
-    }
-
-    private function applyListTransform(string $name, callable $listTransformer): bool
-    {
-        $currentList = $this->getList($name);
-        $newList = $listTransformer($currentList);
-        if (!is_array($newList)) {
-            return false;
-        }
-
-        return $this->writeListAtomic($name, array_values($newList));
-    }
-
-    private function writeListAtomic(string $name, array $list): bool
-    {
-        $filePath = $this->getFilePath($name);
-        $tmpName = $filePath.'.tmp.'.uniqid('', true);
-
-        try {
-            $this->filesystem->write($tmpName, serialize($list));
-            $this->filesystem->move($tmpName, $filePath);
+            // Re-read AFTER acquiring the lock to capture any concurrent writes
+            $current = $this->getList($name);
+            $updated = $transform($current);
+            $this->filesystem->write($this->getFilePath($name), serialize(array_values($updated)));
 
             return true;
         } catch (FilesystemException $e) {
-            try {
-                $this->filesystem->delete($tmpName);
-            } catch (\Throwable $ignored) {
-            }
-
             return false;
+        } finally {
+            flock($lockHandle, LOCK_UN);
+            fclose($lockHandle);
         }
     }
 
